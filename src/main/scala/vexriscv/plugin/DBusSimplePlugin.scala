@@ -378,7 +378,9 @@ class DBusSimplePlugin(catchAddressMisaligned : Boolean = false,
 
     decoderService.add(FENCE, Nil)
 
-    rspStage = if(stages.last == execute) execute else (if(emitCmdInMemoryStage) writeBack else memory)
+    // Calculate rspStage robustly
+    rspStage = if (earlyInjection) execute else pipeline.stages.dropWhile(_ != execute).drop(1).headOption.getOrElse(stages.last)
+
     if(catchSomething) {
       val exceptionService = pipeline.service(classOf[ExceptionService])
       memoryExceptionPort = exceptionService.newExceptionPort(rspStage)

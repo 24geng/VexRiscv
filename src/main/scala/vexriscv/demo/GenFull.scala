@@ -4,11 +4,14 @@ import vexriscv.plugin._
 import vexriscv.ip.{DataCacheConfig, InstructionCacheConfig}
 import vexriscv.{plugin, VexRiscv, VexRiscvConfig}
 import spinal.core._
+import vexriscv.ip.rvv.RVVParameter
 
 /**
  * Created by spinalvm on 15.06.17.
  */
 object GenFull extends App{
+  val rvvParam = RVVParameter(VLEN = 128, ELEN = 64, XLEN = 32)
+
   def config = VexRiscvConfig(
     plugins = List(
       new IBusCachedPlugin(
@@ -80,7 +83,8 @@ object GenFull extends App{
         earlyBranch = false,
         catchAddressMisaligned = true
       ),
-      new YamlPlugin("cpu0.yaml")
+      new YamlPlugin("cpu0.yaml"),
+      new RVVPlugin(p = rvvParam)
     )
   )
 

@@ -187,7 +187,9 @@ object Riscv{
   def FSW                = M"-----------------010-----0100111"
   def FSD                = M"-----------------011-----0100111"
 
-
+  // RiscV V Extension
+  def VSETVL             = M"0000000----------111-----1010111" // Note: rs1 != 0, rs2 != 0
+  def VSETVLI            = M"-----------------111-----1010111" // Note: rs1 == 0
 
   object CSR{
     def MVENDORID = 0xF11 // MRO Vendor ID.
@@ -238,6 +240,11 @@ object Riscv{
     val FFLAGS = 0x1
     val FRM = 0x2
     val FCSR = 0x3
+
+    // RiscV V Extension CSRs
+    val VL        = 0xC20 // U M VLEN Vector Length
+    val VTYPE     = 0xC21 // U M VTYPE Vector Data Type Register
+    val VLENB     = 0xC22 // U M VLENB Vector Length in Bytes (Const)
 
     val DCSR      = 0x7B0
     val DPC       = 0x7B1
