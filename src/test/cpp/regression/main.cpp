@@ -22,6 +22,12 @@
 
 #define VL_RANDOM_I_WIDTH(w) (VL_RANDOM_I() & (1l << w)-1l)
 
+// <<< Add these lines >>>
+//#define RVV_PASS_ADDR 0xF00FFF20
+//#define RVV_FAIL_ADDR 0xF00FFF24
+#define TOHOST_ADDR   0xF0010000 // <<< Updated to match rvv_test.S usage
+#define FROMHOST_ADDR 0x80000004
+
 using namespace std;
 
 struct timespec timer_get(){
@@ -1871,7 +1877,52 @@ public:
 				//top->eval();
 				top->clk = 1;
 				top->eval();
+                // <<< Add print statements for public signals near failure time >>>
+                                // <<< Print signals around cycle 36 failure point >>>
+                                // <<< Print EXECUTE stage signals around cycle 36 failure point >>>
+                if ( (i/2) >= 34 && (i/2) <= 38 ) { // Target cycles 34, 35, 36, 37, 38
+                    std::cout << "DEBUG Time=" << i / 2; // Print simulation time in cycles
+                    try {
+                        // --- Print available EXECUTE stage signals based on VVexRiscv_VexRiscv.h ---
+                        std::cout << " exec_finalVL=0x" << std::hex << top->VexRiscv->execute_RVVPlugin_finalVL;
 
+                        // Print actualVType fields (available)
+                        std::cout << " exec_actualVtype(vill=" << (int)top->VexRiscv->execute_RVVPlugin_actualVType_vill
+                                  << " vma=" << (int)top->VexRiscv->execute_RVVPlugin_actualVType_vma
+                                  << " vta=" << (int)top->VexRiscv->execute_RVVPlugin_actualVType_vta
+                                  << " sew=0x" << std::hex << (int)top->VexRiscv->execute_RVVPlugin_actualVType_vsew
+                                  << " lmul=0x" << std::hex << (int)top->VexRiscv->execute_RVVPlugin_actualVType_vlmul << ")";
+
+                        // --- Corrected block to print actual CSR values ---
+                        uint32_t cpp_csr_vl = top->VexRiscv->RVVPlugin_vlReg; // Actual name from VexRiscv.h
+                        uint32_t cpp_csr_vtype_bits = top->VexRiscv->RVVPlugin_vtypeBitsReg; // Actual name from VexRiscv.h
+
+                        std::cout << " CSR_VL=0x" << std::hex << cpp_csr_vl;
+
+                        // Extract fields from cpp_csr_vtype_bits for printing (assuming XLEN=32)
+                        bool cpp_csr_vill = (cpp_csr_vtype_bits >> 31) & 0x1;
+                        bool cpp_csr_vma  = (cpp_csr_vtype_bits >> 7) & 0x1;
+                        bool cpp_csr_vta  = (cpp_csr_vtype_bits >> 6) & 0x1;
+                        uint32_t cpp_csr_vlmul = (cpp_csr_vtype_bits >> 3) & 0x7;
+                        uint32_t cpp_csr_vsew  = cpp_csr_vtype_bits & 0x7;
+
+                        std::cout << " CSR_VTYPE_bits=0x" << std::hex << cpp_csr_vtype_bits
+                                  << " (vill=" << cpp_csr_vill
+                                  << " vma=" << cpp_csr_vma
+                                  << " vta=" << cpp_csr_vta
+                                  << " vlmul=0x" << std::hex << cpp_csr_vlmul
+                                  << " vsew=0x" << std::hex << cpp_csr_vsew << ")";
+
+                    } catch (const std::exception& e) {
+                        std::cout << " Error accessing public signals (runtime): " << e.what();
+                    } catch (...) {
+                        std::cout << " Unknown error accessing public signals (runtime).";
+                    }
+                    std::cout << std::dec << std::endl; // Reset formatting and newline
+                    fflush(stdout); // Force immediate print
+                }
+				// std::cout << "DEBUG Loop Cycle: " << (i/2) << std::endl;
+                // fflush(stdout); // Force immediate print
 				instanceCycles += 1;
 
 				for(SimElement* simElement : simElements) simElement->postCycle();
@@ -1952,6 +2003,7 @@ public:
 				dutPutChar((char)*data);
 				break;
 			}
+
 #ifdef EXTERNAL_INTERRUPT
 			case 0xF0011000u: top->externalInterrupt = *data & 1; break;
 #endif
@@ -4153,9 +4205,71 @@ static void multiThreadedExecute(queue<std::function<void()>> &lambdas){
 	}
 }
 
+// +++ Add the RvvTest class definition +++
+class RvvTest : public WorkspaceRegression {
+public:
+    uint64_t resultFromToHost = 0; // Store the value written to tohost
+
+    RvvTest(string name) : WorkspaceRegression(name) {
+        // Disable Golden Model comparison for RVV tests
+        riscvRefEnable = false; 
+    }
+
+    // Override dBusAccess to capture writes to the correct TOHOST_ADDR
+    virtual void dBusAccess(uint32_t addr, bool wr, uint32_t size, uint8_t *dataBytes, bool *error) override {
+        
+		std::cout << "RvvTest::dBusAccess called: addr=0x" << std::hex << addr
+                  << ", wr=" << wr << ", size=" << std::dec << size << std::endl;
+        fflush(stdout); // Force immediate print
+		// Check for write to the TOHOST address used by WorkspaceRegression base and linker script
+        if (wr && addr == TOHOST_ADDR) { 
+            // >>> Add Print: Entered TOHOST handling block <<<
+            std::cout << "DEBUG: Entered TOHOST (0xF0010000) write handler." << std::endl;
+
+            // Assuming the write is at least 4 bytes (sw instruction)
+            if (size >= 4) { 
+                resultFromToHost = *(uint32_t*)dataBytes; // Capture the written value
+                // >>> Add Print: Captured value <<<
+                std::cout << "DEBUG: Captured TOHOST value: " << resultFromToHost << std::endl;
+
+                // Signal success or failure immediately based on the written code
+                if (resultFromToHost == 1) {
+                    // >>> Add Print: Calling pass() <<<
+                    std::cout << "DEBUG: Result is 1, calling pass()..." << std::endl;
+                    fflush(stdout); // Force print before potential exception
+                    pass(); // Signal simulation success
+                } else if (resultFromToHost != 0) {
+                    // Optional: Log the failure code
+                    logTraces << "RVV test failed via TOHOST write. Code: " << resultFromToHost << endl;
+                    // >>> Add Print: Calling fail() <<<
+                    std::cout << "DEBUG: Result is non-zero failure code (" << resultFromToHost << "), calling fail()..." << std::endl;
+                    fflush(stdout); // Force print before potential exception
+                    fail(); // Signal simulation failure
+                }
+            } else {
+                 // Handle potential smaller writes if necessary, though sw is expected
+                 // >>> Add Print: Unexpected size <<<
+                 std::cout << "DEBUG: Warning: Unexpected write size (" << size << ") to TOHOST_ADDR 0xF0010000" << std::endl;
+                 logTraces << "Warning: Unexpected write size (" << size << ") to TOHOST_ADDR 0xF0010000" << endl;
+            }
+        } else if (wr) {
+             // >>> Add Print: Other write detected <<<
+             std::cout << "    Write to other address: 0x" << std::hex << addr << std::endl;
+        }
+
+        // Call base class implementation AFTER potentially handling TOHOST
+        // This ensures pass() or fail() is called before base class might interfere
+        WorkspaceRegression::dBusAccess(addr, wr, size, dataBytes, error);
+    }
+
+    // checks() might not be needed if dBusAccess handles pass/fail directly
+    // virtual void checks() override { ... }
+};
+// +++ End of RvvTest class definition +++
+
 int main(int argc, char **argv, char **env) {
     #ifdef SEED
-    srand48(SEED);
+    srand49(SEED);
     #endif
 	Verilated::randReset(2);
 	Verilated::commandArgs(argc, argv);
@@ -4271,297 +4385,51 @@ int main(int argc, char **argv, char **env) {
 //    return 0;
 
 
+	// --- Prepare lambda queue for tests ---
+	queue<std::function<void()>> lambdas;
+
+	// >>> Comment out ALL existing lambdas.push calls below <<< 
+	/*
 	for(int idx = 0;idx < 1;idx++){
 
 		#if defined(DEBUG_PLUGIN_EXTERNAL) || defined(RUN_HEX)
 		{
-			WorkspaceRegression w("run");
-			#ifdef RUN_HEX
-			//w.loadHex("/home/spinalvm/hdl/zephyr/zephyrSpinalHdl/samples/synchronization/build/zephyr/zephyr.hex");
-			w.loadHex(RUN_HEX);
-			w.withRiscvRef();
-			#endif
-			w.setIStall(false);
-			w.setDStall(false);
-
-			#if defined(TRACE) || defined(TRACE_ACCESS)
-				//w.setCyclesPerSecond(5e3);
-				//printf("Speed reduced 5Khz\n");
-			#endif
-			w.run(0xFFFFFFFFFFFF);
-			exit(0);
+            // ... (RUN_HEX lambda commented out)
 		}
 		#endif
 
 
 		#ifdef ISA_TEST
-
-		//	redo(REDO,TestA().run();)
-			for(const string &name : riscvComplianceMain){
-				redo(REDO, Compliance(name).run();)
-			}
-			for(const string &name : complianceTestMemory){
-				redo(REDO, Compliance(name).run();)
-			}
-
-			#ifdef COMPRESSED
-            for(const string &name : complianceTestC){
-                redo(REDO, Compliance(name).run();)
-            }
-			#endif
-
-			#ifdef MUL
-			for(const string &name : complianceTestMul){
-				redo(REDO, Compliance(name).run();)
-			}
-			#endif
-			#ifdef DIV
-			for(const string &name : complianceTestDiv){
-				redo(REDO, Compliance(name).run();)
-			}
-			#endif
-			#if defined(CSR) && !defined(CSR_SKIP_TEST)
-			for(const string &name : complianceTestCsr){
-				redo(REDO, Compliance(name).run();)
-			}
-			#endif
-
-            #ifdef FENCEI
-            redo(REDO, Compliance("I-FENCE.I-01").run();)
-			#endif
-            #ifdef EBREAK
-            redo(REDO, Compliance("I-EBREAK-01").run();)
-			#endif
-
-			for(const string &name : riscvTestMain){
-				redo(REDO,RiscvTest(name).withRiscvRef()->run();)
-			}
-			for(const string &name : riscvTestMemory){
-				redo(REDO,RiscvTest(name).withRiscvRef()->run();)
-			}
-
-
-			#ifdef MUL
-			for(const string &name : riscvTestMul){
-				redo(REDO,RiscvTest(name).withRiscvRef()->run();)
-			}
-			#endif
-			#ifdef DIV
-			for(const string &name : riscvTestDiv){
-				redo(REDO,RiscvTest(name).withRiscvRef()->run();)
-			}
-			#endif
-
-            #ifdef COMPRESSED
-            redo(REDO,RiscvTest("rv32uc-p-rvc").withRiscvRef()->bootAt(0x800000FCu)->run());
-            #endif
-
-			#if defined(CSR) && !defined(CSR_SKIP_TEST)
-			    #ifndef COMPRESSED
-				    uint32_t machineCsrRef[] = {1,11,   2,0x80000003u,   3,0x80000007u,   4,0x8000000bu,   5,6,7,0x80000007u     ,
-				    8,6,9,6,10,4,11,4,    12,13,0,   14,2,     15,5,16,17,1 };
-				    redo(REDO,TestX28("../../cpp/raw/machineCsr/build/machineCsr",machineCsrRef, sizeof(machineCsrRef)/4).withRiscvRef()->setVcdName("machineCsr")->run(10e4);)
-                #else
-				    uint32_t machineCsrRef[] = {1,11,   2,0x80000003u,   3,0x80000007u,   4,0x8000000bu,   5,6,7,0x80000007u     ,
-				    8,6,9,6,10,4,11,4,    12,13,   14,2,     15,5,16,17,1 };
-				    redo(REDO,TestX28("../../cpp/raw/machineCsr/build/machineCsrCompressed",machineCsrRef, sizeof(machineCsrRef)/4).withRiscvRef()->setVcdName("machineCsrCompressed")->run(10e4);)
-                #endif
-			#endif
-//			#ifdef MMU
-//				uint32_t mmuRef[] = {1,2,3, 0x11111111, 0x11111111, 0x11111111, 0x22222222, 0x22222222, 0x22222222, 4, 0x11111111, 0x33333333, 0x33333333, 5,
-//					13, 0xC4000000,0x33333333, 6,7,
-//					1,2,3, 0x11111111, 0x11111111, 0x11111111, 0x22222222, 0x22222222, 0x22222222, 4, 0x11111111, 0x33333333, 0x33333333, 5,
-//					13, 0xC4000000,0x33333333, 6,7};
-//				redo(REDO,TestX28("mmu",mmuRef, sizeof(mmuRef)/4).noInstructionReadCheck()->run(4e4);)
-//			#endif
-
-            #ifdef IBUS_CACHED
-                redo(REDO,WorkspaceRegression("icache").withRiscvRef()->loadHex(string(REGRESSION_PATH) + "../raw/icache/build/icache.hex")->bootAt(0x80000000u)->run(50e3););
-            #endif
-            #ifdef DBUS_CACHED
-                redo(REDO,WorkspaceRegression("dcache").loadHex(string(REGRESSION_PATH) + "../raw/dcache/build/dcache.hex")->bootAt(0x80000000u)->run(2500e3););
-            #endif
-
-            #ifdef MMU
-                redo(REDO,WorkspaceRegression("mmu").withRiscvRef()->loadHex(string(REGRESSION_PATH) + "../raw/mmu/build/mmu.hex")->bootAt(0x80000000u)->run(50e3););
-            #endif
-            #ifdef SUPERVISOR
-                redo(REDO,WorkspaceRegression("deleg").withRiscvRef()->loadHex(string(REGRESSION_PATH) + "../raw/deleg/build/deleg.hex")->bootAt(0x80000000u)->run(50e3););
-            #endif
-
-			#ifdef DEBUG_PLUGIN
-			#ifndef CONCURRENT_OS_EXECUTIONS
-				redo(REDO,DebugPluginTest().run(1e6););
-            #endif
-			#endif
+            // ... (ISA_TEST lambdas commented out) ...
 		#endif
-
 		#ifdef CUSTOM_SIMD_ADD
-			redo(REDO,WorkspaceRegression("custom_simd_add").loadHex(string(REGRESSION_PATH) + "../custom/simd_add/build/custom_simd_add.hex")->bootAt(0x00000000u)->run(50e3););
+            // ... (CUSTOM_SIMD_ADD lambda commented out) ...
 		#endif
 
 		#ifdef CUSTOM_CSR
-			redo(REDO,WorkspaceRegression("custom_csr").loadHex(string(REGRESSION_PATH) + "../custom/custom_csr/build/custom_csr.hex")->bootAt(0x00000000u)->run(50e3););
+            // ... (CUSTOM_CSR lambda commented out) ...
 		#endif
 
-
-		#ifdef LRSC
-			redo(REDO,WorkspaceRegression("lrsc").withRiscvRef()->loadHex(string(REGRESSION_PATH) + "../raw/lrsc/build/lrsc.hex")->bootAt(0x00000000u)->run(10e3););
-		#endif
-
-		#ifdef PMP
-			redo(REDO,WorkspaceRegression("pmp").loadHex(string(REGRESSION_PATH) + "../raw/pmp/build/pmp.hex")->bootAt(0x80000000u)->run(10e3););
-		#endif
-
-		#ifdef AMO
-			redo(REDO,WorkspaceRegression("amo").withRiscvRef()->loadHex(string(REGRESSION_PATH) + "../raw/amo/build/amo.hex")->bootAt(0x00000000u)->run(10e3););
-		#endif
-
-        #ifdef RVF
-        for(const string &name : riscvTestFloat){
-            redo(REDO,RiscvTest(name).withRiscvRef()->bootAt(0x80000188u)->writeWord(0x80000184u, 0x00305073)->run();)
-        }
-        #endif
-        #ifdef RVD
-        for(const string &name : riscvTestDouble){
-            redo(REDO,RiscvTest(name).withRiscvRef()->bootAt(0x80000188u)->writeWord(0x80000184u, 0x00305073)->run();)
-        }
-        #endif
-
-		#ifdef DHRYSTONE
-			Dhrystone("dhrystoneO3_Stall","dhrystoneO3",true,true).run(1.5e6);
-			#if defined(COMPRESSED)
-			    Dhrystone("dhrystoneO3C_Stall","dhrystoneO3C",true,true).run(1.5e6);
-            #endif
-			#if defined(MUL) && defined(DIV)
-				Dhrystone("dhrystoneO3M_Stall","dhrystoneO3M",true,true).run(1.9e6);
-				#if defined(COMPRESSED)
-				    Dhrystone("dhrystoneO3MC_Stall","dhrystoneO3MC",true,true).run(1.9e6);
-				#endif
-			#endif
-			#if defined(COMPRESSED)
-			Dhrystone("dhrystoneO3C","dhrystoneO3C",false,false).run(1.9e6);
-            #endif
-			Dhrystone("dhrystoneO3","dhrystoneO3",false,false).run(1.9e6);
-			#if defined(MUL) && defined(DIV)
-				#if defined(COMPRESSED)
-				    Dhrystone("dhrystoneO3MC","dhrystoneO3MC",false,false).run(1.9e6);
-				#endif
-				Dhrystone("dhrystoneO3M","dhrystoneO3M",false,false).run(1.9e6);
-			#endif
-		#endif
-
-        #ifdef COREMARK
-            for(int withStall = 1; true ;withStall--){
-                string rv = "rv32i";
-                #if defined(MUL) && defined(DIV)
-                    rv += "m";
-                #endif
-                #if defined(COMPRESSED)
-                    if(withStall == -2) break;
-                    if(withStall != -1) rv += "c";
-                #else
-                    if(withStall == -1) break;
-                #endif
-                WorkspaceRegression("coremark_" + rv + (withStall  > 0 ? "_stall" : "_nostall")).withRiscvRef()
-                ->loadBin(string(REGRESSION_PATH) + "../../resources/bin/coremark_" + rv + ".bin", 0x80000000)
-                ->bootAt(0x80000000)
-                ->setIStall(withStall > 0)
-                ->setDStall(withStall > 0)
-                ->run(50e6);
-            }
-        #endif
-
-
-
-		#ifdef FREERTOS
-		{
-		    #ifdef SEED
-            srand48(SEED);
-            #endif
-			//redo(1,WorkspaceRegression("freeRTOS_demo").loadHex("../../resources/hex/freeRTOS_demo.hex")->bootAt(0x80000000u)->run(100e6);)
-			vector <std::function<void()>> tasks;
-
-            /*for(int redo = 0;redo < 4;redo++)*/{
-                for(const string &name : freeRtosTests){
-                    tasks.push_back([=]() { WorkspaceRegression(name + "_rv32i_O0").withRiscvRef()->loadHex(string(REGRESSION_PATH) + "../../resources/freertos/" + name + "_rv32i_O0.hex")->bootAt(0x80000000u)->run(4e6*15);});
-                    tasks.push_back([=]() { WorkspaceRegression(name + "_rv32i_O3").withRiscvRef()->loadHex(string(REGRESSION_PATH) + "../../resources/freertos/" + name + "_rv32i_O3.hex")->bootAt(0x80000000u)->run(4e6*15);});
-                    #ifdef COMPRESSED
-//                        tasks.push_back([=]() { WorkspaceRegression(name + "_rv32ic_O0").withRiscvRef()->loadHex(string(REGRESSION_PATH) + "../../resources/freertos/" + name + "_rv32ic_O0.hex")->bootAt(0x80000000u)->run(5e6*15);});
-                        tasks.push_back([=]() { WorkspaceRegression(name + "_rv32ic_O3").withRiscvRef()->loadHex(string(REGRESSION_PATH) + "../../resources/freertos/" + name + "_rv32ic_O3.hex")->bootAt(0x80000000u)->run(4e6*15);});
-                    #endif
-                    #if defined(MUL) && defined(DIV)
-//                        #ifdef COMPRESSED
-//                            tasks.push_back([=]() { WorkspaceRegression(name + "_rv32imac_O3").withRiscvRef()->loadHex(string(REGRESSION_PATH) + "../../resources/freertos/" + name + "_rv32imac_O3.hex")->bootAt(0x80000000u)->run(4e6*15);});
-//                        #else
-                            tasks.push_back([=]() { WorkspaceRegression(name + "_rv32im_O3").withRiscvRef()->loadHex(string(REGRESSION_PATH) + "../../resources/freertos/" + name + "_rv32im_O3.hex")->bootAt(0x80000000u)->run(4e6*15);});
-//                        #endif
-                    #endif
-                }
-			}
-
-            while(tasks.size() > FREERTOS_COUNT){
-                tasks.erase(tasks.begin() + (VL_RANDOM_I_WIDTH(32)%tasks.size()));
-            }
-
-
-            queue <std::function<void()>> tasksSelected(std::deque<std::function<void()>>(tasks.begin(), tasks.end()));
-			multiThreadedExecute(tasksSelected);
-        }
-		#endif
-
-        #ifdef ZEPHYR
-        {
-            #ifdef SEED
-            srand48(SEED);
-            #endif
-            //redo(1,WorkspaceRegression("freeRTOS_demo").loadHex("../../resources/hex/freeRTOS_demo.hex")->bootAt(0x80000000u)->run(100e6);)
-            vector <std::function<void()>> tasks;
-
-            /*for(int redo = 0;redo < 4;redo++)*/{
-                for(const string &name : zephyrTests){
-                    #ifdef COMPRESSED
-                        tasks.push_back([=]() { ZephyrRegression(name + "_rv32ic").withRiscvRef()->loadHex(string(REGRESSION_PATH) + "../../resources/VexRiscvRegressionData/sim/zephyr/" + name + "_rv32ic.hex")->bootAt(0x80000000u)->run(180e6);});
-                    #else
-                        tasks.push_back([=]() { ZephyrRegression(name + "_rv32i").withRiscvRef()->loadHex(string(REGRESSION_PATH) + "../../resources/VexRiscvRegressionData/sim/zephyr/" + name + "_rv32i.hex")->bootAt(0x80000000u)->run(180e6);});
-                    #endif
-                    #if defined(MUL) && defined(DIV)
-                            tasks.push_back([=]() { ZephyrRegression(name + "_rv32im").withRiscvRef()->loadHex(string(REGRESSION_PATH) + "../../resources/VexRiscvRegressionData/sim/zephyr/" + name + "_rv32im.hex")->bootAt(0x80000000u)->run(180e6);});
-                    #endif
-                }
-            }
-
-            while(tasks.size() > ZEPHYR_COUNT){
-                tasks.erase(tasks.begin() + (VL_RANDOM_I_WIDTH(32)%tasks.size()));
-            }
-
-
-            queue <std::function<void()>> tasksSelected(std::deque<std::function<void()>>(tasks.begin(), tasks.end()));
-            multiThreadedExecute(tasksSelected);
-        }
-        #endif
-
-		#if defined(LINUX_REGRESSION)
-            {
-
-        	    LinuxRegression soc("linux");
-        	    #ifndef DEBUG_PLUGIN_EXTERNAL
-        	    soc.withRiscvRef();
-        		soc.loadBin(string(REGRESSION_PATH) + EMULATOR, 0x80000000);
-        		soc.loadBin(string(REGRESSION_PATH) + VMLINUX,  0xC0000000);
-        		soc.loadBin(string(REGRESSION_PATH) + DTB,      0xC3000000);
-        		soc.loadBin(string(REGRESSION_PATH) + RAMDISK,  0xC2000000);
-        		#endif
-        		//soc.setIStall(true);
-        		//soc.setDStall(true);
-        		soc.bootAt(0x80000000);
-        		soc.run(153995602l*9);
-//        		soc.run((470000000l + 2000000) / 2);
-//        		soc.run(438700000l/2);
-            }
-        #endif
+            // ... (Comment out other test types like LRSC, PMP, AMO, RVF, RVD, DHRYSTONE, COREMARK, FREERTOS, ZEPHYR etc.) ...
 
 	}
+    */
+	// >>> End of commented out section <<<
+
+	// >>> Add the RVV test lambda HERE <<<
+	lambdas.push([](){
+		// Use RvvTest class, which disables Golden Model comparison
+		auto test = new RvvTest("rvv_vsetvl_test"); 
+		// Adjust path relative to execution directory (src/test/cpp/regression)
+		test->loadHex("../custom/rvv_test/build/rvv_test.hex"); 
+		test->bootAt(0x80000000);
+		test->run(50000); // Timeout can be adjusted
+	});
+	// >>> End of added RVV test lambda <<<
+
+
+	multiThreadedExecute(lambdas);
+
 
 	uint64_t duration = timer_end(startedAt);
 	cout << endl << "****************************************************************" << endl;

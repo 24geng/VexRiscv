@@ -5,6 +5,7 @@ import spinal.lib._
 import vexriscv._
 import vexriscv.ip.rvv._ // Import RVV Interface definitions
 import vexriscv.Riscv // Import Riscv constants
+import spinal.core.sim._ // <<< Add this import for printf >>>
 
 import scala.collection.mutable.ArrayBuffer
 
@@ -99,6 +100,10 @@ class RVVPlugin(p: RVVParameter, externalVpu: Boolean = false) extends Plugin[Ve
     import pipeline.config._
     import Riscv._
 
+    // <<< 添加 Verilator public 调试信号 >>>
+    val decodeActiveDebugSignal = Reg(Bool()) init(False) addAttribute(Verilator.public) setName("decodeActiveDebugSignal")
+    val isVsetvlDecodeDebugSignal = Reg(Bool()) init(False) addAttribute(Verilator.public) setName("isVsetvlDecodeDebugSignal")
+
     val rvvCoreArea = if (!externalVpu) pipeline plug new Area {
       val core = RVVCore(1, p)
       port <> core.io.port(0)
@@ -130,41 +135,76 @@ class RVVPlugin(p: RVVParameter, externalVpu: Boolean = false) extends Plugin[Ve
     decode plug new Area {
       import decode._
 
-      // Only insert specific values when it's actually VSETVL/VSETVLI
-      // Defaults are handled by decoderService.addDefault now
+      // <<< 移除之前的 printf 语句 >>>
+      // printf("Decode Stage ACTIVE: Instruction=0x%h\\\\n\", input(INSTRUCTION))
+      // when(input(IS_VSETVL)) {
+      //     printf("Decode Stage DETECTED VSETVL/VSETVLI: Instruction=0x%h\\\\n\", input(INSTRUCTION))
+      // }
+
+      // <<< 更新 Verilator public 调试信号 >>>
+      decodeActiveDebugSignal := arbitration.isValid
+      isVsetvlDecodeDebugSignal := input(IS_VSETVL) // 持续更新，即使 stage 无效
+
+      // 只有当确实是 VSETVL/VSETVLI 时才插入特定值
+      // 默认值现在由 decoderService.addDefault 处理
       when(input(IS_VSETVL)) {
         insert(REQUESTED_AVL) := input(RS1).asUInt
-        insert(REQUESTED_VTYPE_RS2) := input(RS2).asUInt // For VSETVL
-        insert(REQUESTED_VTYPE_IMM) := input(INSTRUCTION)(30 downto 20) // imm[10:0] for VSETVLI
+        insert(REQUESTED_VTYPE_RS2) := input(RS2).asUInt // 用于 VSETVL
+        insert(REQUESTED_VTYPE_IMM) := input(INSTRUCTION)(30 downto 20) // 用于 VSETVLI 的 imm[10:0]
+
+        // <<< 移除之前的 printf 语句 >>>
+        // printf("Decode Stage (IS_VSETVL=True): REQ_AVL=0x%h, REQ_VTYPE_RS2=0x%h, REQ_VTYPE_IMM=0x%h\\\\n\",
+        //        input(RS1).asUInt,
+        //        input(RS2).asUInt,
+        //        input(INSTRUCTION)(30 downto 20))
       }
     }
 
     execute plug new Area {
       import execute._
 
-      // Read the current VTYPE bits from the CSR register
-      // Note: Reading vtypeBitsReg directly assumes CsrPlugin makes the value available
-      // combinationally in execute for reads. If it uses pipelineCsrRead=true,
-      // we might need adjustment, but GenFull default is false.
+      // --- 移除 Verilator public 属性 ---
+      // input(REQUESTED_AVL).addAttribute(Verilator.public)
+      // input(REQUESTED_VTYPE_RS2).addAttribute(Verilator.public)
+
+      // <<< 修改为使用 isFiring，并打印更多输入信息 >>>
+      when(arbitration.isFiring) { // 仅在阶段有效且未被暂停/刷新时打印
+        printf("Execute Stage FIRING: IS_VSETVL=%b, REQ_AVL=0x%h, REQ_VTYPE_RS2=0x%h, REQ_VTYPE_IMM=0x%h\\n",
+               input(IS_VSETVL),
+               input(REQUESTED_AVL),
+               input(REQUESTED_VTYPE_RS2),
+               input(REQUESTED_VTYPE_IMM)) // 也打印 IMM
+      }
+
+      // 读取当前的 VTYPE 位
       val currentVtypeBits = csrArea.vtypeBitsReg
       val requestedVTypeView = VType(p) // Combinational view
       requestedVTypeView.assignFromBits(currentVtypeBits(widthOf(requestedVTypeView)-1 downto 0))
 
       // Determine if the incoming instruction *would* modify VTYPE (for calculation)
-      // This logic remains the same, but operates on inputs/instruction bits
       val isVsetvliForCalc = input(IS_VSETVL) && (input(INSTRUCTION)(rs1Range) === 0)
       val vtypeBitsForCalc = isVsetvliForCalc ? input(REQUESTED_VTYPE_IMM).asUInt.resized | input(REQUESTED_VTYPE_RS2)
       val vtypeFromInstr = VType(p)
-      // Cast vtypeBitsForCalc to Bits before slicing and assigning
-      vtypeFromInstr.assignFromBits(vtypeBitsForCalc.asBits(widthOf(vtypeFromInstr)-1 downto 0))
-      when(isVsetvliForCalc) {
-        vtypeFromInstr.vill := input(REQUESTED_VTYPE_IMM)(10)
-        vtypeFromInstr.vma  := input(REQUESTED_VTYPE_IMM)(7)
-        vtypeFromInstr.vta  := input(REQUESTED_VTYPE_IMM)(6)
-        vtypeFromInstr.vlmul:= input(REQUESTED_VTYPE_IMM)(5 downto 3).asUInt
-        vtypeFromInstr.vsew := input(REQUESTED_VTYPE_IMM)(2 downto 0).asUInt
-      }
-      
+      // --- Remove assignFromBits ---
+      // vtypeFromInstr.assignFromBits(vtypeBitsForCalc.asBits(widthOf(vtypeFromInstr)-1 downto 0))
+
+      // --- Explicitly parse vtype bits based on Spec layout, for both vsetvl and vsetvli ---
+      // Use vtypeBitsForCalc which holds either imm or rs2 value
+      // Assuming XLEN=32 for now, adjust if needed. Spec Figure 6.1 vtype layout:
+      // XLEN-1 | XLEN-2 .. 8 | 7  | 6  | 5:3   | 2:0
+      //  vill  | Reserved    | vma| vta| vlmul | vsew
+      val sourceBits = vtypeBitsForCalc.asBits // Use the combined source
+
+      // Check XLEN and adjust slicing if necessary, assuming XLEN >= 9
+      val vtypeWidthInSource = p.XLEN min 32 // Consider only relevant bits for vtype CSR in RV32
+
+      // For RV32, vtype occupies lower XLEN bits. vill is at XLEN-1.
+      vtypeFromInstr.vill  := sourceBits(vtypeWidthInSource - 1)
+      vtypeFromInstr.vma   := sourceBits(7)
+      vtypeFromInstr.vta   := sourceBits(6)
+      vtypeFromInstr.vlmul := sourceBits(5 downto 3).asUInt
+      vtypeFromInstr.vsew  := sourceBits(2 downto 0).asUInt
+
       // Calculate SEW based on the *requested* VTYPE from the instruction
       val SEW = UInt(log2Up(p.ELEN + 1) bits)
       switch(vtypeFromInstr.vsew) { // Use vtypeFromInstr here
@@ -240,39 +280,89 @@ class RVVPlugin(p: RVVParameter, externalVpu: Boolean = false) extends Plugin[Ve
         actualVType.vill := True // Ensure vill is set if illegal
       }
       
+      // --- Add Verilator public attribute for debugging ---
+      finalVL.addAttribute(Verilator.public)
+      actualVType.addAttribute(Verilator.public) // Add to the Bundle directly
+
+      // <<< 为 VL 计算添加详细的 printf >>>
+      when(input(IS_VSETVL) && arbitration.isFiring) { // 使用 isFiring
+        // --- 保留先前步骤的详细 printf ---
+        printf("Execute Stage (vsetvl) Details: isIllegal=%b, currentAvl=0x%h, correctedVlmax=0x%h, finalVL=0x%h, reqVtype=0x%h, parsedSEW=%h, parsedLMUL=%h\\n",
+               isIllegal,
+               currentAvl,
+               correctedVlmax,
+               finalVL,
+               vtypeBitsForCalc,
+               vtypeFromInstr.vsew,
+               vtypeFromInstr.vlmul)
+      }
+
       insert(CALCULATED_VL) := finalVL 
       insert(CALCULATED_VTYPE) := actualVType // Insert the calculated actual vtype
-    }
 
-    // --- Memory Stage Logic --- 
-    // Remove this area as the pipeline build mechanism handles the propagation automatically
-    // when inserts are used correctly in the previous stage.
-    /*
-    memory plug new Area {
-      import memory._
-      // Always propagate stageables read by WriteBack stage or CSR area
-      output(CALCULATED_VL)     := input(CALCULATED_VL)
-      output(CALCULATED_VTYPE)   := input(CALCULATED_VTYPE)
-      output(IS_VSETVL)         := input(IS_VSETVL)
-      output(WRITE_RD_FROM_VL)  := input(WRITE_RD_FROM_VL)
-    }
-    */
+      // <<< 保留现有的 final VL printf (冗余但暂时保留) >>>
+      when(input(IS_VSETVL) && arbitration.isFiring) { // 使用 isFiring
+        printf("Execute Stage (vsetvl): FinalVL=0x%h\n", finalVL) // 使用 %h
+      }
 
-    // --- WriteBack Stage Logic ---
+      // <<< For debugging, PPRINT THE CORRECT VARIABLES >>>
+      when(arbitration.isFiring && input(IS_VSETVL)){
+          val elenConst = U(p.ELEN) // Convert p.ELEN to a UInt constant for printing
+          val vtypeFromInstrLmul = vtypeFromInstr.vlmul // Assign to a temp val
+          val actualVill = actualVType.vill // Assign to a temp val
+          // Using traditional printf format
+          printf("Execute (IS_VSETVL): SEW=0x%h, ELEN=0x%h, vtypeFromInstr.vlmul=0x%h, isIllegalVar=%b, finalVLVar=0x%h, actualVType.villVar=%b\n",
+                 SEW, elenConst, vtypeFromInstrLmul, isIllegal, finalVL, actualVill)
+      }
+    } // End of execute plug new Area
+
     writeBack plug new Area {
-      import writeBack._
+      import writeBack._ // Import writeBack._ to access stage signals
 
-      when(input(WRITE_RD_FROM_VL)) {
-        output(REGFILE_WRITE_DATA) := input(CALCULATED_VL).asBits.resized
-      }
+      // When IS_VSETVL is true and the instruction is valid and firing in the writeBack stage
+      when(input(IS_VSETVL) && arbitration.isFiring) { // arbitration.isFiring is crucial
+        
+        // Handle writing rd (destination register)
+        when(input(WRITE_RD_FROM_VL)) { // This stageable was set in decode
+          output(REGFILE_WRITE_DATA) := input(CALCULATED_VL).asBits.resized // Write vl to rd
+        }
 
-      // Update CSRs from VSETVL instruction
-      when(arbitration.isFiring && input(IS_VSETVL)) {
-        csrArea.vlReg := input(CALCULATED_VL)
-        // Update vtypeBitsReg directly with the calculated VTYPE bits
-        csrArea.vtypeBitsReg := input(CALCULATED_VTYPE).asBits.resize(p.XLEN)
+        // Explicitly construct the 32-bit vtype value for the CSR
+        val calculatedVl = input(CALCULATED_VL)
+        val calculatedVtypeBundle = input(CALCULATED_VTYPE) // This is VType(p) Bundle
+
+        val vtypeBitsForCsr = Bits(p.XLEN bits)
+        vtypeBitsForCsr(p.XLEN-1) := calculatedVtypeBundle.vill
+        vtypeBitsForCsr(7)        := calculatedVtypeBundle.vma
+        vtypeBitsForCsr(6)        := calculatedVtypeBundle.vta
+        vtypeBitsForCsr(5 downto 3) := calculatedVtypeBundle.vlmul.asBits // Ensure .asBits if vlmul is UInt
+        vtypeBitsForCsr(2 downto 0) := calculatedVtypeBundle.vsew.asBits   // Ensure .asBits if vsew is UInt
+        
+        // Zero out reserved bits (e.g., XLEN-2 downto 8 for XLEN=32)
+        // Ensure slices are within bounds if XLEN is small, though for XLEN=32 this is fine.
+        if (p.XLEN > 8) { // General check, for XLEN=32, (XLEN-2) is 30.
+            val highReservedBit = if (p.XLEN-2 >= 8) p.XLEN-2 else 7 // Avoid negative range length
+            if (highReservedBit >= 8) { // only zero if the range is valid
+                 vtypeBitsForCsr(highReservedBit downto 8) := 0
+            }
+        }
+
+        csrArea.vlReg        := calculatedVl
+        csrArea.vtypeBitsReg := vtypeBitsForCsr // Assign the carefully constructed 32-bit value
+
+        // Optional: Add Verilator public signals or printf for debugging writeback
+        // SpinalHDL printf is usually optimized out for synthesis.
+        // Using traditional printf format
+        printf("RVVPlugin:WriteBack (IS_VSETVL): Firing! Writing vlCSR=0x%h\n", calculatedVl)
+        printf("  CalculatedVType Bundle: vill=%b vma=%b vta=%b vlmul=0x%h vsew=0x%h\n",
+               calculatedVtypeBundle.vill,
+               calculatedVtypeBundle.vma,
+               calculatedVtypeBundle.vta,
+               calculatedVtypeBundle.vlmul, // Assuming vlmul and vsew are printable as hex if UInt
+               calculatedVtypeBundle.vsew)
+        printf("  Value written to vtype CSR (32-bit): 0x%h\n", vtypeBitsForCsr)
       }
-    }
+    } // End of writeBack plug new Area
   }
 
   // --- Regression Arguments ---

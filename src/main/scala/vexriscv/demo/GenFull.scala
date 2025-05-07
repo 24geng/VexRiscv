@@ -4,54 +4,35 @@ import vexriscv.plugin._
 import vexriscv.ip.{DataCacheConfig, InstructionCacheConfig}
 import vexriscv.{plugin, VexRiscv, VexRiscvConfig}
 import spinal.core._
+import spinal.lib._ // Required for master/slave, Stream, etc.
+import spinal.lib.com.jtag.{Jtag, JtagTapInstructionCtrl} // Include JtagTapInstructionCtrl
+// import spinal.lib.system.debugger.{SystemDebugger, SystemDebuggerConfig, JtagBridge, SystemDebuggerMemBus} // No longer needed directly here
 import vexriscv.ip.rvv.RVVParameter
 
 /**
  * Created by spinalvm on 15.06.17.
  */
 object GenFull extends App{
-  val rvvParam = RVVParameter(VLEN = 128, ELEN = 64, XLEN = 32)
+  def cpu() = {
+    val rvvParam = RVVParameter(VLEN = 128, ELEN = 64, XLEN = 32)
+    val simpleBusResetVector = 80000000 // Use a simple reset vector for IBusSimplePlugin
 
-  def config = VexRiscvConfig(
+    val config = VexRiscvConfig(
     plugins = List(
-      new IBusCachedPlugin(
-        prediction = DYNAMIC,
-        config = InstructionCacheConfig(
-          cacheSize = 4096,
-          bytePerLine =32,
-          wayCount = 1,
-          addressWidth = 32,
-          cpuDataWidth = 32,
-          memDataWidth = 32,
-          catchIllegalAccess = true,
+        new IBusSimplePlugin(
+          resetVector = 0x80000000L,
+          cmdForkOnSecondStage = false,
+          cmdForkPersistence = false,
+          prediction = NONE,
+          catchAccessFault = true, // Keep basic fault catching if desired
+          compressedGen = false,
+          injectorStage = true,    // Enable instruction injection
+          busLatencyMin = 1
+        ),
+        new DBusSimplePlugin(
+          catchAddressMisaligned = true, // Keep basic checks
           catchAccessFault = true,
-          asyncTagMemory = false,
-          twoCycleRam = true,
-          twoCycleCache = true
-        ),
-        memoryTranslatorPortConfig = MmuPortConfig(
-          portTlbSize = 4
-        )
-      ),
-      new DBusCachedPlugin(
-        config = new DataCacheConfig(
-          cacheSize         = 4096,
-          bytePerLine       = 32,
-          wayCount          = 1,
-          addressWidth      = 32,
-          cpuDataWidth      = 32,
-          memDataWidth      = 32,
-          catchAccessError  = true,
-          catchIllegal      = true,
-          catchUnaligned    = true
-        ),
-        memoryTranslatorPortConfig = MmuPortConfig(
-          portTlbSize = 6
-        )
-      ),
-      new MmuPlugin(
-        virtualRange = _(31 downto 28) === 0xC,
-        ioRange      = _(31 downto 28) === 0xF
+          earlyInjection = false // Use default
       ),
       new DecoderSimplePlugin(
         catchIllegalInstruction = true
@@ -77,20 +58,20 @@ object GenFull extends App{
       ),
       new MulPlugin,
       new DivPlugin,
-      new CsrPlugin(CsrPluginConfig.small(0x80000020l)),
-      new DebugPlugin(ClockDomain.current.clone(reset = Bool().setName("debugReset"))),
+        new CsrPlugin(CsrPluginConfig.small(mtvecInit = 0x80000020l)),
       new BranchPlugin(
         earlyBranch = false,
         catchAddressMisaligned = true
       ),
-      new YamlPlugin("cpu0.yaml"),
-      new RVVPlugin(p = rvvParam)
+        new YamlPlugin("cpu0.yaml"),
+        new RVVPlugin(p = rvvParam)
     )
   )
 
-  def cpu() = new VexRiscv(
+    new VexRiscv(
     config
   )
+  }
 
   SpinalVerilog(cpu())
 }

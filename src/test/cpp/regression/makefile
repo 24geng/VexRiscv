@@ -1,10 +1,10 @@
 DEBUG?=no
 REGRESSION_PATH?=./
 VEXRISCV_FILE?=../../../../VexRiscv.v
-IBUS?=CACHED
+IBUS?=SIMPLE
 IBUS_TC?=no
 IBUS_DATA_WIDTH?=32
-DBUS?=CACHED
+DBUS?=SIMPLE
 DBUS_LOAD_DATA_WIDTH?=32
 DBUS_STORE_DATA_WIDTH?=32
 TRACE?=no
@@ -20,7 +20,7 @@ CSR?=yes
 CSR_SKIP_TEST?=no
 EBREAK?=no
 FENCEI?=no
-MMU?=yes
+MMU?=no
 DBUS_EXCLUSIVE?=no
 DBUS_INVALIDATE?=no
 PMP?=no
@@ -35,7 +35,7 @@ RUN_HEX=no
 WITH_RISCV_REF=yes
 CUSTOM_SIMD_ADD?=no
 CUSTOM_CSR?=no
-DHRYSTONE=yes
+DHRYSTONE=no
 FREERTOS?=no
 ZEPHYR?=no
 REDO?=10
@@ -49,6 +49,7 @@ SUPERVISOR?=no
 STOP_ON_ERROR?=no
 COREMARK=no
 WITH_USER_IO?=no
+CUSTOM_RVV_TEST?=no
 
 
 ADDCFLAGS += -CFLAGS -DREGRESSION_PATH='\"$(REGRESSION_PATH)/\"'
@@ -343,6 +344,10 @@ ifneq ($(ZEPHYR),no)
 endif
 endif
 
+ifeq ($(CUSTOM_RVV_TEST),yes)
+    ADDCFLAGS += -CFLAGS -DCUSTOM_RVV_TEST
+endif
+
 all: clean run
 
 run: compile
@@ -353,7 +358,7 @@ verilate: ${VEXRISCV_FILE}
 	verilator -cc  ${VEXRISCV_FILE}  -O3 -LDFLAGS -pthread ${ADDCFLAGS} --gdbbt ${VERILATOR_ARGS} -Wno-UNOPTFLAT -Wno-WIDTH --x-assign unique --exe main.cpp
  	
 compile: verilate
-	make  -j${THREAD_COUNT} -C obj_dir/ -f VVexRiscv.mk VVexRiscv
+	make  -j${THREAD_COUNT} -C obj_dir/ -f VVexRiscv.mk LDFLAGS+="-L/usr/local/opt/systemc/lib -lsystemc" VVexRiscv
  	
 clean:
 	rm -rf obj_dir

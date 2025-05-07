@@ -1,0 +1,36 @@
+OUTPUT_ARCH( "riscv" )
+ENTRY( _start )
+
+/* Define the tohost address expected by WorkspaceRegression */
+PROVIDE(TOHOST_ADDR = 0xF0010000);
+PROVIDE(FROMHOST_ADDR = 0xF0010004); /* Define FROMHOST too, just in case */
+
+MEMORY {
+  /* Changed ORIGIN to 0x80000000 to match simulation environment */
+  RAM (wx) : ORIGIN = 0x80000000, LENGTH = 16K
+}
+
+SECTIONS {
+  . = ORIGIN(RAM); /* Set current location counter to start of RAM */
+  .text : {
+    *(.text*)
+  } > RAM
+
+  .data : {
+    *(.data*)
+    *(.sdata*)
+    *(.rodata*)
+  } > RAM
+
+  .bss : {
+    *(.bss*)
+    *(.sbss*)
+  } > RAM
+
+  /* Define the tohost symbol required by the test framework's pass/fail check */
+  #tohost = 0xF00FFF10;
+  . = ALIGN(4); /* Ensure alignment if needed */
+
+  /* Define symbol needed by assembly test pass/fail */
+  #TOHOST_ADDR = 0xF00FFF10;
+}
