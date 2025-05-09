@@ -358,7 +358,7 @@ verilate: ${VEXRISCV_FILE}
 	verilator -cc  ${VEXRISCV_FILE}  -O3 -LDFLAGS -pthread ${ADDCFLAGS} --gdbbt ${VERILATOR_ARGS} -Wno-UNOPTFLAT -Wno-WIDTH --x-assign unique --exe main.cpp
  	
 compile: verilate
-	make  -j${THREAD_COUNT} -C obj_dir/ -f VVexRiscv.mk LDFLAGS+="-L/usr/local/opt/systemc/lib -lsystemc" VVexRiscv
+	make  -j${THREAD_COUNT} -C obj_dir/ -f VVexRiscv.mk VVexRiscv
  	
 clean:
 	rm -rf obj_dir

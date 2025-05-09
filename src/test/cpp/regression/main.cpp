@@ -26,7 +26,6 @@
 //#define RVV_PASS_ADDR 0xF00FFF20
 //#define RVV_FAIL_ADDR 0xF00FFF24
 #define TOHOST_ADDR   0xF0010000 // <<< Updated to match rvv_test.S usage
-#define FROMHOST_ADDR 0x80000004
 
 using namespace std;
 
@@ -1880,22 +1879,33 @@ public:
                 // <<< Add print statements for public signals near failure time >>>
                                 // <<< Print signals around cycle 36 failure point >>>
                                 // <<< Print EXECUTE stage signals around cycle 36 failure point >>>
-                if ( (i/2) >= 34 && (i/2) <= 38 ) { // Target cycles 34, 35, 36, 37, 38
-                    std::cout << "DEBUG Time=" << i / 2; // Print simulation time in cycles
+                if ( i >= 1 && i <= 90 ) { // Target cycles 34, 35, 36, 37, 38
+                    std::cout << "DEBUG Time=" << i ; // Print simulation time in cycles
                     try {
                         // --- Print available EXECUTE stage signals based on VVexRiscv_VexRiscv.h ---
+                        // Print isIllegal debug signal first
+                        std::cout << " exec_isIllegal=" << (int)top->VexRiscv->execute_isIllegal_debug; // Newly added
+
                         std::cout << " exec_finalVL=0x" << std::hex << top->VexRiscv->execute_RVVPlugin_finalVL;
 
-                        // Print actualVType fields (available)
+                        // Print actualVType fields
                         std::cout << " exec_actualVtype(vill=" << (int)top->VexRiscv->execute_RVVPlugin_actualVType_vill
                                   << " vma=" << (int)top->VexRiscv->execute_RVVPlugin_actualVType_vma
                                   << " vta=" << (int)top->VexRiscv->execute_RVVPlugin_actualVType_vta
                                   << " sew=0x" << std::hex << (int)top->VexRiscv->execute_RVVPlugin_actualVType_vsew
                                   << " lmul=0x" << std::hex << (int)top->VexRiscv->execute_RVVPlugin_actualVType_vlmul << ")";
+                        
+                        // --- Placeholder for other execute stage signals you might make public ---
+                        // std::cout << " exec_reqAvl=0x" << std::hex << top->VexRiscv->execute_REQUESTED_AVL; 
+                        // std::cout << " exec_reqVtypeImm=0x" << std::hex << top->VexRiscv->execute_REQUESTED_VTYPE_IMM;
+                        // std::cout << " exec_reqVtypeRs2=0x" << std::hex << top->VexRiscv->execute_REQUESTED_VTYPE_RS2;
+                        // std::cout << " exec_avlIsVlmax=" << (int)top->VexRiscv->execute_AVL_IS_VLMAX;
+                        // std::cout << " exec_correctedVlmax=0x" << std::hex << top->VexRiscv->execute_RVVPlugin_correctedVlmax_debug;
+                        // std::cout << " exec_effectiveAvl=0x" << std::hex << top->VexRiscv->execute_RVVPlugin_effectiveAvl_debug;
 
                         // --- Corrected block to print actual CSR values ---
-                        uint32_t cpp_csr_vl = top->VexRiscv->RVVPlugin_vlReg; // Actual name from VexRiscv.h
-                        uint32_t cpp_csr_vtype_bits = top->VexRiscv->RVVPlugin_vtypeBitsReg; // Actual name from VexRiscv.h
+                        uint32_t cpp_csr_vl = top->VexRiscv->csr_vl; 
+                        uint32_t cpp_csr_vtype_bits = top->VexRiscv->csr_vtype_bits; 
 
                         std::cout << " CSR_VL=0x" << std::hex << cpp_csr_vl;
 

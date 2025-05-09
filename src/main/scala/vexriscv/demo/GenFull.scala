@@ -14,7 +14,13 @@ import vexriscv.ip.rvv.RVVParameter
  */
 object GenFull extends App{
   def cpu() = {
-    val rvvParam = RVVParameter(VLEN = 128, ELEN = 64, XLEN = 32)
+    val rvvParam = RVVParameter(
+      VLEN = 128, 
+      ELEN = 64, 
+      XLEN = 32, 
+      VLENB = 128 / 8, // Provide VLENB calculated from VLEN
+      ELEN_MAX = 64      // Provide ELEN_MAX (e.g., same as ELEN or larger if needed)
+    )
     val simpleBusResetVector = 80000000 // Use a simple reset vector for IBusSimplePlugin
 
     val config = VexRiscvConfig(
@@ -58,7 +64,7 @@ object GenFull extends App{
       ),
       new MulPlugin,
       new DivPlugin,
-        new CsrPlugin(CsrPluginConfig.small(mtvecInit = 0x80000020l)),
+        new CsrPlugin(CsrPluginConfig.all(mtvecInit = 0x80000020L)),
       new BranchPlugin(
         earlyBranch = false,
         catchAddressMisaligned = true

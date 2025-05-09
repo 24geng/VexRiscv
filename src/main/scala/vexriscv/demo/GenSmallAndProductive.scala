@@ -1,8 +1,10 @@
 package vexriscv.demo
 
 import vexriscv.plugin._
+import vexriscv.ip.{DataCacheConfig, InstructionCacheConfig}
 import vexriscv.{plugin, VexRiscv, VexRiscvConfig}
 import spinal.core._
+import spinal.lib.com.jtag.JtagTapInstructionCtrl
 import vexriscv.ip.rvv.RVVParameter
 
 /**
@@ -10,7 +12,13 @@ import vexriscv.ip.rvv.RVVParameter
  */
 object GenSmallAndProductive extends App{
   def cpu() = {
-    val rvvParam = RVVParameter(VLEN = 128, ELEN = 64, XLEN = 32)
+    val rvvParam = RVVParameter(
+      VLEN = 128,
+      ELEN = 64,
+      XLEN = 32,
+      VLENB = 128 / 8,
+      ELEN_MAX = 64
+    )
 
     new VexRiscv(
     config = VexRiscvConfig(

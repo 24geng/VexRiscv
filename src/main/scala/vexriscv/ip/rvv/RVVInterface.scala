@@ -19,7 +19,9 @@ object RVVOpcode extends SpinalEnum {
 case class RVVParameter(
     VLEN: Int = 128, // Vector Register Length in bits (e.g., 128, 256)
     ELEN: Int = 64,  // Maximum Element Width supported (e.g., 64 for RV64V, could be 32)
-    XLEN: Int = 32   // Base Integer Architecture Width (usually 32 for VexRiscv)
+    XLEN: Int = 32,  // Base Integer Architecture Width (usually 32 for VexRiscv)
+    VLENB: Int,    // Removed default value: = VLEN / 8
+    ELEN_MAX: Int // Removed default value: = ELEN
     // TODO: Add flags for supported features (Floating Point, specific op groups, etc.)
 ) {
   require(VLEN > 0 && (VLEN & (VLEN - 1)) == 0, "VLEN must be a power of 2")

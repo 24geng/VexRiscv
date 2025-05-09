@@ -18,23 +18,23 @@ LOAD /Users/liupeng/sifive_toolchain_v2020.12/bin/../lib/gcc/riscv64-unknown-elf
                 [!provide]                        PROVIDE (FROMHOST_ADDR = 0xf0010004)
                 0x0000000080000000                . = ORIGIN (RAM)
 
-.text           0x0000000080000000       0x54
+.text           0x0000000080000000      0x2ec
  *(.text*)
- .text          0x0000000080000000       0x54 build/src/rvv_test.o
+ .text          0x0000000080000000      0x2ec build/src/rvv_test.o
                 0x0000000080000000                _start
 
-.data           0x0000000080000054        0x0
+.data           0x00000000800002f0        0x8
  *(.data*)
- .data          0x0000000080000054        0x0 build/src/rvv_test.o
+ .data          0x00000000800002f0        0x8 build/src/rvv_test.o
  *(.sdata*)
  *(.rodata*)
 
-.bss            0x0000000080000054        0x0
+.bss            0x00000000800002f8        0x0
  *(.bss*)
- .bss           0x0000000080000054        0x0 build/src/rvv_test.o
+ .bss           0x00000000800002f8        0x0 build/src/rvv_test.o
  *(.sbss*)
                 0x00000000f00fff10                tohost = 0xf00fff10
-                0x0000000080000054                . = ALIGN (0x4)
+                0x00000000800002f8                . = ALIGN (0x4)
                 0x00000000f00fff10                TOHOST_ADDR = 0xf00fff10
 OUTPUT(build/rvv_test.elf elf32-littleriscv)
 

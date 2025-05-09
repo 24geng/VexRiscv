@@ -152,7 +152,7 @@ object VexRiscvSynthesisBench {
     val smallAndProductive = new Rtl {
       override def getName(): String = "VexRiscv small and productive"
       override def getRtlPath(): String = "VexRiscvSmallAndProductive.v"
-      SpinalVerilog(wrap(GenSmallAndProductive.cpu()).setDefinitionName(getRtlPath().split("\\.").head))
+      SpinalVerilog(wrap(vexriscv.demo.GenSmallAndProductive.cpu()).setDefinitionName(getRtlPath().split("\\.").head))
     }
 
     val smallAndProductiveWithICache = new Rtl {
