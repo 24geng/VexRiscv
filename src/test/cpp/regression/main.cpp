@@ -255,6 +255,15 @@ class success : public std::exception { };
 #define u32 uint32_t
 #define u64 uint64_t
 
+// Vector CSRs (RISC-V Vector Extension) - Standard Addresses
+    #define CSR_VL         0xC20 // Vector Length
+    #define CSR_VTYPE      0xC21 // Vector Type
+    #define CSR_VLENB      0xC22 // Vector Length in Bytes (VLEN/8)
+    #define CSR_VSTART     0x008 // Vector Start Index
+    #define CSR_VXSAT      0x009 // Vector Fixed-Point Saturation Flag
+    #define CSR_VXRM       0x00A // Vector Fixed-Point Rounding Mode
+    #define CSR_VCSR       0x00F // Vector Control and Status (combines VXRM and VXSAT)
+
 class FpuRsp{
 public:
 	u32 flags;
@@ -277,6 +286,11 @@ bool fpuRspLut[32] = {false,false,false,false,false,false,false,false,false,fals
 bool fpuRs1Lut[32] = {false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,false,true,false,false,false,true,false};
 class RiscvGolden {
 public:
+	// Implementation-defined parameters for Vector Extension
+	static const uint32_t XLEN = 32;
+	static const uint32_t VLEN = 256;     // Example: Vector Register Length in bits (e.g., 128, 256)
+	static const uint32_t ELEN_MAX = 64;  // Example: Max Element width supported (e.g., 32, 64, matches SEW_MAX or underlying ELEN)
+
 	int32_t pc, lastPc;
 	uint32_t lastInstruction;
 	int32_t regs[32];
@@ -292,6 +306,12 @@ public:
     queue<FpuRsp> fpuRsp;
     queue<FpuCommit> fpuCommit;
     queue<FpuCompletion> fpuCompletion;
+// Vector CSRs - Member Variables  <--- 添加在这里
+    uint32_t vl_csr;
+    uint32_t vtype_csr;
+    uint32_t vstart_csr;
+    uint32_t vlenb_csr;
+    uint32_t vcsr_csr; // Holds combined vxsat and vxrm
 
 	union status {
 		uint32_t raw;
@@ -468,6 +488,44 @@ public:
 		sbadaddr = 42;
 		lrscReserved = false;
 		fpuCompletionTockens = 0;
+
+        // Initialize Vector CSRs
+        vl_csr = 0;
+        vtype_csr = (1U << (XLEN - 1)); // vill=1, others 0 (reset state)
+        vstart_csr = 0; // vsetvl* instructions will reset vstart to 0. Spec says arbitrary at reset.
+        vlenb_csr = VLEN / 8;
+        vcsr_csr = 0; // vxrm, vxsat are arbitrary at reset.
+	}
+
+    // Helper function to get SEW from encoding (can be static or member)
+    static uint32_t get_sew_from_encoding(uint8_t vsew_enc) {
+        // vsew[2:0] encoding from RISC-V Vector Spec v1.0 Table 3
+        // 1xx is reserved
+        if ((vsew_enc >> 2) & 0x1) return 0; // Reserved
+
+        switch (vsew_enc & 0x3) { // Check lower 2 bits for 000, 001, 010, 011
+            case 0x0: return 8;    // 000
+            case 0x1: return 16;   // 001
+            case 0x2: return 32;   // 010
+            case 0x3: return 64;   // 011
+            default: return 0; // Should not happen due to mask
+        }
+    }
+
+    // Helper function to get LMUL from encoding (can be static or member)
+    static float get_lmul_from_encoding(uint8_t vlmul_enc) {
+        // vlmul[2:0] encoding from RISC-V Vector Spec v1.0
+        switch (vlmul_enc) {
+            case 0x0: return 1.0f;
+            case 0x1: return 2.0f;
+            case 0x2: return 4.0f;
+            case 0x3: return 8.0f;
+            case 0x4: return 0.0f; // Reserved
+            case 0x5: return 1.0f / 8.0f; // mf8
+            case 0x6: return 1.0f / 4.0f; // mf4
+            case 0x7: return 1.0f / 2.0f; // mf2
+            default: return 0.0f; // Should not happen
+        }
 	}
 
 	virtual void rfWrite(int32_t address, int32_t data) {
@@ -629,15 +687,21 @@ public:
 		case UTIMEH: *value  = dutRfWriteValue; break;
 		#endif
 
+		// Vector CSRs Read Logic
+        case CSR_VL:     *value = vl_csr; break;
+        case CSR_VTYPE:  *value = vtype_csr; break;
+        case CSR_VLENB:  *value = vlenb_csr; break;
+        case CSR_VSTART: *value = vstart_csr; break;
+        case CSR_VCSR:   *value = vcsr_csr; break; // Reads the combined vxsat and vxrm
+        case CSR_VXSAT:  *value = vcsr_csr & 0x1; break; // Read only vxsat bit from vcsr_csr
+        case CSR_VXRM:   *value = (vcsr_csr >> 1) & 0x3; break; // Read only vxrm bits from vcsr_csr
+
 		default: {
             if(csr >= 0x3A0 && csr <= 0x3A3 || csr >= 0x3B0 && csr <= 0x3BF) break; //PMP
-            return true;
+            return true; // Illegal to read unlisted CSRs
 		}break;
 		}
-//        if(csr == MSTATUS || csr == SSTATUS){
-//            printf("READ  %x %x\n", pc, *value);
-//        }
-		return false;
+		return false; // Read was successful
 	}
 
 	virtual uint32_t csrReadToWriteOverride(int32_t csr, uint32_t value){
@@ -652,10 +716,7 @@ public:
 	#define maskedWrite(dst, src, mask) dst=((dst) & ~(mask))|((src) & (mask));
 
 	virtual bool csrWrite(int32_t csr, uint32_t value){
-		if(((csr >> 8) & 0x3) > privilege) return true;
-//		if(csr == MSTATUS || csr == SSTATUS){
-//		    printf("MIAOU %x %x\n", pc, value);
-//		}
+		if(((csr >> 8) & 0x3) > privilege) return true; // Privilege check
 		switch(csr){
 		case MSTATUS: status.raw = value & 0x7FFFFFFF; break;
 		case MIP: ipSoft = value; break;
@@ -680,21 +741,31 @@ public:
 		case SATP: satp.raw = value;  break;
 
 		#ifdef RVF
-		case FCSR: fcsr.raw = value & 0x7F; status.fs = 3; break;
-		case FRM: fcsr.frm = value; status.fs = 3; break;
-		case FFLAGS: fcsr.flags = value; status.fs = 3; break;
+		case FCSR: fcsr.raw = value & 0xFF; status.fs = 3; break;
+		case FRM: fcsr.frm = value & 0x7; status.fs = 3; break;
+		case FFLAGS: fcsr.flags = value & 0x1F; status.fs = 3; break;
 		#endif
 
+		// Vector CSRs Write Logic
+		case CSR_VSTART: vstart_csr = value; /* Masking to XLEN or (VLEN/SEW_min -1) could be added here if strictness is needed */ break;
+		case CSR_VCSR:   vcsr_csr = value & 0x00000007; /*vxrm (bits 2:1), vxsat (bit 0)*/ if(misa & (1<<5)) status.fs=3; break;
+		case CSR_VXSAT:  vcsr_csr = (vcsr_csr & ~0x1) | (value & 0x1); if(misa & (1<<5)) status.fs=3; break;
+		case CSR_VXRM:   vcsr_csr = (vcsr_csr & ~0x6) | ((value & 0x3) << 1); if(misa & (1<<5)) status.fs=3; break;
+
+		// CSR_VL, CSR_VTYPE, CSR_VLENB are read-only through CSR mechanism.
+		// They are updated by vsetvl*/vstop/vstart instructions.
+		// Attempting to write them via CSRRW, etc. will fall through to default
+		// and return true, leading to an illegal instruction trap. This is correct.
+		case CSR_VL:
+		case CSR_VTYPE:
+		case CSR_VLENB:
+
 		default: {
-            if(csr >= 0x3A0 && csr <= 0x3A3 || csr >= 0x3B0 && csr <= 0x3BF) break; //PMP
-            ilegalInstruction();
-            return true;
+            if(csr >= 0x3A0 && csr <= 0x3A3 || csr >= 0x3B0 && csr <= 0x3BF) break; //PMP registers are handled (no-op here).
+            return true; // Illegal to write unlisted/read-only CSRs
 		}break;
 		}
-//        if(csr == MSTATUS || csr == SSTATUS){
-//            printf("      %x %x\n", pc, status.raw);
-//        }
-		return false;
+		return false; // Write was successful or handled
 	}
 
     
@@ -1083,6 +1154,151 @@ public:
 				}
 				break;
 			}
+			case 0x57: { // OP-V major opcode: vsetvl, vsetvli, vsetivli
+                uint32_t funct3 = i32_func3; // (i >> 12) & 0x7
+
+                if (funct3 == 0x7) { // funct3 for vsetvl* is 0b111
+                    uint32_t inst_31 = (i >> 31) & 0x1;
+                    uint32_t inst_30 = (i >> 30) & 0x1;
+
+                    uint32_t rd_idx = rd32;      // ((i >> 7) & 0x1F)
+                    uint32_t rs1_idx = (i >> 15) & 0x1F;
+                    // rs2_idx field ((i >> 20) & 0x1F) is used by vsetvl for source reg, or as part of immediate for others
+
+                    uint64_t avl_val = 0;
+                    uint32_t vtypei_from_imm = 0; 
+                    bool vtype_from_rs2 = false;
+                    bool decode_error = false;
+                    bool avl_needs_vlmax_resolution = false;
+
+                    if (inst_31 == 0) { // vsetvli rd, rs1, zimm[10:0]
+                        vtypei_from_imm = (i >> 20) & 0x7FF;
+                        if (rs1_idx == 0) { 
+                            if (rd_idx == 0) { avl_val = this->vl_csr; } // vsetvli x0, x0, imm  => AVL = current vl
+                            else { avl_needs_vlmax_resolution = true; }   // vsetvli rd, x0, imm  => AVL = VLMAX (resolved later)
+                        } else {
+                            avl_val = regs[rs1_idx];
+                        }
+                    } else if (inst_31 == 1 && inst_30 == 1) { // vsetivli rd, uimm[4:0], zimm[9:0]
+                        vtypei_from_imm = (i >> 20) & 0x3FF;
+                        uint32_t uimm_val = rs1_idx; // uimm_avl from rs1_idx field
+                        if (uimm_val == 0) {
+                            if (rd_idx == 0) { avl_val = this->vl_csr; } // vsetivli x0, x0_uimm, imm => AVL = current vl
+                            else { avl_needs_vlmax_resolution = true; }   // vsetivli rd, x0_uimm, imm => AVL = VLMAX
+                        } else {
+                            avl_val = uimm_val;
+                        }
+                    } else if (inst_31 == 1 && inst_30 == 0) { // vsetvl rd, rs1, rs2
+                        uint32_t func7_lower_5bits = (i >> 25) & 0x1F;
+                        if (func7_lower_5bits != 0) { 
+                            decode_error = true;
+                        } else {
+                            vtype_from_rs2 = true;
+                            if (rs1_idx == 0) { 
+                                if (rd_idx == 0) { avl_val = this->vl_csr; } // vsetvl x0, x0, rs2 => AVL = current vl
+                                else { avl_needs_vlmax_resolution = true; }   // vsetvl rd, x0, rs2 => AVL = VLMAX
+                            } else {
+                                avl_val = regs[rs1_idx];
+                            }
+                        }
+                    } else {
+                        decode_error = true; 
+                    }
+
+                    if (decode_error) {
+                        ilegalInstruction();
+                        return;
+                    }
+
+                    uint32_t final_vl = 0;
+                    uint32_t final_vtype_csr_val = (1U << (XLEN - 1)); // Default: vill=1, others=0
+                    bool force_vill = false;
+                    uint32_t parsed_vtype_8bit_setting; 
+
+                    if (vtype_from_rs2) {
+                        uint32_t rs2_val = regs[(i >> 20) & 0x1F]; // rs2_idx is (i >> 20) & 0x1F here
+                        bool reserved_bits_set = false;
+                        for (unsigned int bit_k = 8; bit_k < XLEN - 1; ++bit_k) {
+                            if((rs2_val >> bit_k) & 1) { reserved_bits_set = true; break; }
+                        }
+                        if (reserved_bits_set || ((rs2_val >> (XLEN-1)) & 1) ) { // vill from rs2 or reserved bits set
+                            force_vill = true;
+                        } else {
+                            parsed_vtype_8bit_setting = rs2_val & 0xFF;
+                        }
+                    } else { // vtypei from immediate
+                        if ((vtypei_from_imm >> 8) != 0) { // Higher bits of vtype immediate (beyond bit 7) must be zero
+                            force_vill = true;
+                        } else {
+                            parsed_vtype_8bit_setting = vtypei_from_imm & 0xFF;
+                        }
+                    }
+
+                    uint32_t sew = 0;
+                    float lmul_float = 0.0f;
+                    uint32_t vlmax = 0;
+                    uint8_t vsew_enc = 0, vlmul_enc = 0, vta_enc = 0, vma_enc = 0;
+
+                    if (!force_vill) {
+                        vsew_enc = (parsed_vtype_8bit_setting >> 3) & 0x7;
+                        vlmul_enc = parsed_vtype_8bit_setting & 0x7;
+                        vta_enc = (parsed_vtype_8bit_setting >> 6) & 0x1;
+                        vma_enc = (parsed_vtype_8bit_setting >> 7) & 0x1;
+
+                        sew = get_sew_from_encoding(vsew_enc);
+                        lmul_float = get_lmul_from_encoding(vlmul_enc);
+
+                        if (sew == 0 || lmul_float == 0.0f || sew > ELEN_MAX || (VLEN > 0 && sew > VLEN) ) {
+                            force_vill = true;
+                        } else {
+                            if (VLEN == 0 || sew == 0) { 
+                                vlmax = 0; 
+                                if (!(VLEN > 0 && sew > 0 && lmul_float > 0.0f)) force_vill = true; 
+                            }
+                            if (!force_vill) {
+                                vlmax = static_cast<uint32_t>(floor(((double)VLEN / sew) * lmul_float));
+                                
+                                if (avl_needs_vlmax_resolution) {
+                                    avl_val = vlmax; // Resolve AVL if it was meant to be VLMAX
+                                }
+                                
+                                // Special condition from Table 8: AVL=0, rd=x0, rs1=x0 (or uimm=0) => vl=0
+                                bool is_zero_avl_rd0_rs0_case = false;
+                                if (rd_idx == 0 && !avl_needs_vlmax_resolution) { // Only if AVL wasn't just set to VLMAX
+                                   if (inst_31 == 0 && rs1_idx == 0 && avl_val == 0) is_zero_avl_rd0_rs0_case = true; // vsetvli x0,x0,imm with AVL=0
+                                   else if (inst_31 == 1 && inst_30 == 1 && ((i >> 15) & 0x1F) == 0 && avl_val == 0) is_zero_avl_rd0_rs0_case = true; // vsetivli x0,uimm=0,imm
+                                   else if (inst_31 == 1 && inst_30 == 0 && rs1_idx == 0 && avl_val == 0) is_zero_avl_rd0_rs0_case = true; // vsetvl x0,x0,rs2 with AVL=0 from vl_csr
+                                }
+
+                                if (is_zero_avl_rd0_rs0_case) {
+                                    final_vl = 0;
+                                } else {
+                                    final_vl = std::min(static_cast<uint32_t>(avl_val), vlmax);
+                                }
+                                final_vtype_csr_val = (vma_enc << 7) | (vta_enc << 6) | (vsew_enc << 3) | vlmul_enc;
+                            }
+                        }
+                    }                    
+                    if(force_vill){ // If any condition decided vill must be set
+                         final_vl = 0;
+                         final_vtype_csr_val = (1U << (XLEN - 1)); // vill=1, others 0
+                    }
+
+                    // Update CSRs and rd
+                    this->vl_csr = final_vl;
+                    this->vtype_csr = final_vtype_csr_val;
+                    this->vstart_csr = 0; // vsetvl* instructions reset vstart
+
+                    if (rd_idx != 0) {
+                        rfWrite(rd_idx, final_vl);
+                    }
+                    pcWrite(pc + 4); 
+                } else { // funct3 != 0x7 for OP-V
+                    ilegalInstruction();
+                    return;
+                }
+            } break; // End of case 0x57 for OP-V
+			
 			case 0x2F: // Atomic stuff
 				switch(i32_func3){
 				case 0x2:
@@ -4153,6 +4369,154 @@ static void multiThreadedExecute(queue<std::function<void()>> &lambdas){
 	}
 }
 
+class VpuTest : public WorkspaceRegression {
+public:
+    VpuTest(string name, string hexFile) : WorkspaceRegression(name) {
+        loadHex(hexFile);
+        setCyclesPerSecond(10*1000*1000);
+        setIStall(false);
+        setDStall(false);
+        withInvalidation();
+    }
+
+    virtual void dBusAccess(uint32_t addr, bool wr, uint32_t size, uint8_t *dataBytes, bool *error) {
+        if (wr) {
+            // 0xF00FFF20是测试通过的写入地址
+            if (addr == 0xF00FFF20) {
+                pass();
+            }
+            // 0xF00FFF24是测试失败的写入地址
+            else if (addr == 0xF00FFF24) {
+                fail();
+            }
+        }
+        WorkspaceRegression::dBusAccess(addr, wr, size, dataBytes, error);
+    }
+
+    virtual void checks() {
+        // 检查已经在dBusAccess中完成
+    }
+};
+
+// 添加头文件支持文件系统操作
+#include <iostream>
+#include <vector>
+#include <string>
+#include <dirent.h> // POSIX目录操作
+#include <string.h> // 字符串操作函数
+#include <sys/stat.h> // 文件状态
+#include <sstream>  // 用于捕获输出
+
+// 添加一个测试vsetvl所有hex文件的函数
+void testAllVsetvlHexFiles() {
+    std::string hexDir = "/Users/liupeng/vexriscv-vpu/src/test/cpp/custom/vsetvl_tests/build";
+    std::cout << "开始测试所有vsetvl测试文件..." << std::endl;
+    
+    // 存储所有hex文件路径
+    std::vector<std::string> hexFiles;
+    
+    // 使用POSIX的dirent.h遍历目录
+    DIR *dir;
+    struct dirent *ent;
+    if ((dir = opendir(hexDir.c_str())) != NULL) {
+        while ((ent = readdir(dir)) != NULL) {
+            std::string filename = ent->d_name;
+            // 检查文件扩展名是否为.hex
+            if (filename.length() > 4 && 
+                filename.substr(filename.length() - 4) == ".hex") {
+                hexFiles.push_back(hexDir + "/" + filename);
+            }
+        }
+        closedir(dir);
+    } else {
+        std::cerr << "无法打开目录: " << hexDir << std::endl;
+        return;
+    }
+    
+    std::cout << "找到" << hexFiles.size() << "个hex文件待测试" << std::endl;
+    
+    int passCount = 0;
+    int failCount = 0;
+    std::vector<std::string> failedTests;
+    
+    // 记录开始时的成功计数
+    uint32_t initialSuccessCount = Workspace::successCounter;
+    uint32_t initialTestsCount = Workspace::testsCounter;
+    
+    // 对每个hex文件运行测试
+    for(const auto& hexFile : hexFiles) {
+        // 从路径中提取测试名称(基本文件名，不含扩展名)
+        std::string testName = hexFile;
+        size_t lastSlash = testName.find_last_of('/');
+        if (lastSlash != std::string::npos) {
+            testName = testName.substr(lastSlash + 1);
+        }
+        size_t lastDot = testName.find_last_of('.');
+        if (lastDot != std::string::npos) {
+            testName = testName.substr(0, lastDot);
+        }
+        
+        std::cout << "测试: " << testName << " (" << hexFile << ")" << std::endl;
+        
+        // 记录当前测试计数器状态
+        uint32_t beforeTestsCount = Workspace::testsCounter;
+        uint32_t beforeSuccessCount = Workspace::successCounter;
+        
+        bool errorFound = false;
+        
+        try {
+            // 运行测试
+            VpuTest(testName, hexFile)
+                .withRiscvRef()      // 启用RISC-V参考模型
+                ->setIStall(false)   // 禁用指令总线停滞
+                ->setDStall(false)   // 禁用数据总线停滞
+                ->withInvalidation() // 启用缓存失效
+                ->run(5000);         // 运行最多5000个周期
+        } catch(std::exception& e) {
+            errorFound = true;
+            std::cout << "异常: " << e.what() << std::endl;
+        }
+        
+        // 检查测试是否通过
+        // 方法1：检查测试和成功计数器变化
+        uint32_t afterTestsCount = Workspace::testsCounter;
+        uint32_t afterSuccessCount = Workspace::successCounter;
+        
+        // 测试运行了，但成功计数没增加，说明测试失败
+        if (afterTestsCount > beforeTestsCount && afterSuccessCount == beforeSuccessCount) {
+            errorFound = true;
+        }
+        
+        if(errorFound) {
+            std::cout << "❌ 测试失败: " << testName << std::endl;
+            failCount++;
+            failedTests.push_back(testName);
+        } else {
+            std::cout << "✅ 测试通过: " << testName << std::endl;
+            passCount++;
+        }
+        
+        std::cout << std::string(40, '-') << std::endl;
+    }
+    
+    // 打印测试统计信息
+    std::cout << "\n测试结果汇总:" << std::endl;
+    std::cout << "总共测试: " << hexFiles.size() << std::endl;
+    std::cout << "通过: " << passCount << std::endl;
+    std::cout << "失败: " << failCount << std::endl;
+    
+    if(failCount > 0) {
+        std::cout << "\n失败的测试:" << std::endl;
+        for(const auto& test : failedTests) {
+            std::cout << "  - " << test << std::endl;
+        }
+    }
+}
+
+// 在main函数中或者当前的示例区域添加调用
+// 替换原来的单个测试调用
+
+
 int main(int argc, char **argv, char **env) {
     #ifdef SEED
     srand48(SEED);
@@ -4163,7 +4527,18 @@ int main(int argc, char **argv, char **env) {
 	printf("BOOT\n");
 	timespec startedAt = timer_start();
 
-
+    // // 添加VPU测试
+    // {
+    //     VpuTest("vsetvl_basic_01", "/Users/liupeng/vexriscv-vpu/src/test/cpp/custom/vsetvl_tests/build/vsetvl_sew8_lmul2.hex")
+    //         .withRiscvRef()  // 启用RISC-V参考模型
+    //         ->setIStall(false)  // 禁用指令总线停滞
+    //         ->setDStall(false)  // 禁用数据总线停滞
+    //         ->withInvalidation()  // 启用缓存失效
+    //         ->run(5000);  // 运行最多5000个周期
+    // }
+	{
+		testAllVsetvlHexFiles();
+	}
 #ifdef LINUX_SOC_SMP
     {
 

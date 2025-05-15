@@ -1,0 +1,37 @@
+
+Memory Configuration
+
+Name             Origin             Length             Attributes
+*default*        0x0000000000000000 0xffffffffffffffff
+
+Linker script and memory map
+
+LOAD build/vsetvl_sew8_lmul4.o
+LOAD /Users/liupeng/sifive_toolchain_v2020.12/bin/../lib/gcc/riscv64-unknown-elf/10.2.0/libgcc.a
+START GROUP
+LOAD /Users/liupeng/sifive_toolchain_v2020.12/bin/../lib/gcc/riscv64-unknown-elf/10.2.0/../../../../riscv64-unknown-elf/lib/libc.a
+LOAD /Users/liupeng/sifive_toolchain_v2020.12/bin/../lib/gcc/riscv64-unknown-elf/10.2.0/../../../../riscv64-unknown-elf/lib/libgloss.a
+END GROUP
+LOAD /Users/liupeng/sifive_toolchain_v2020.12/bin/../lib/gcc/riscv64-unknown-elf/10.2.0/libgcc.a
+                0x0000000080000000                . = 0x80000000
+
+.text           0x0000000080000000       0x58
+ *(.text*)
+ .text          0x0000000080000000       0x58 build/vsetvl_sew8_lmul4.o
+                0x0000000080000000                _start
+                0x0000000080000058                . = ALIGN (0x4)
+
+.data           0x0000000080000058        0x0
+ *(.data*)
+ .data          0x0000000080000058        0x0 build/vsetvl_sew8_lmul4.o
+
+.bss            0x0000000080000058        0x0
+ *(.bss*)
+ .bss           0x0000000080000058        0x0 build/vsetvl_sew8_lmul4.o
+                0x0000000080000058                _end = .
+OUTPUT(build/vsetvl_sew8_lmul4.elf elf32-littleriscv)
+
+.riscv.attributes
+                0x0000000000000000       0x3c
+ .riscv.attributes
+                0x0000000000000000       0x3c build/vsetvl_sew8_lmul4.o
